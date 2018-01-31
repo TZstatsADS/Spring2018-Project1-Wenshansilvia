@@ -1,0 +1,448 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# How does Presidents' inauguration speeches changes by time and how it relates to the history of U.S.? 
+Author: Wenshan Wang
+
+I am interested in finding out the chronological trends of inaugural speeches's length, sentence length distribution, sentiments, as well as the key words. Specificlly, I will evaluate the speech together with several influential historical events, analysizing the different characters under different situation. This report answers four questions:
+
+1. How do the speech lengths change by year and why?
+2. How do the sentence length distribution change by year and why?
+3. How does the sentiment in speeches impacted by influential historical events?
+4. How does key words changed over time? How does it relates to the U.S. history?
+
+## Preparation: Load and process the data
+### 1. Load the needed packages
+```{r, message=FALSE, warning=FALSE}
+packages.used=c("wordcloud","tidytext","rvest", "tibble", "qdap", 
+                "sentimentr", "gplots", "dplyr",
+                "tm", "syuzhet", "factoextra", 
+                "beeswarm", "scales", "RColorBrewer",
+                "RANN", "tm", "topicmodels")
+
+# check packages that need to be installed.
+packages.needed=setdiff(packages.used, 
+                        intersect(installed.packages()[,1], 
+                                  packages.used))
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE,
+                   repos='http://cran.us.r-project.org')
+}
+
+library("rJava")
+library("wordcloud")
+library("tidytext")
+library("ggplot2")
+library("cluster")
+library("fpc")  
+library("rvest")
+library("tibble")
+library("qdap")
+library("sentimentr")
+library("gplots")
+library("dplyr")
+library("tm")
+library("syuzhet")
+library("factoextra")
+library("beeswarm")
+library("scales")
+library("RColorBrewer")
+library("RANN")
+library("tm")
+library("topicmodels")
+
+source("../lib/plotstacked.R")
+source("../lib/speechFuncs.R")
+
+```
+
+### 2. Scrap speeches from from <http://www.presidency.ucsb.edu/>. Create dataframe of speeches.
+```{r}
+main.page <- read_html(x = "http://www.presidency.ucsb.edu/inaugurals.php")
+# Get link URLs
+# f.speechlinks is a function for extracting links from the list of speeches. 
+inaug=f.speechlinks(main.page)
+#head(inaug)
+# as.Date(inaug[,1], format="%B %e, %Y")
+inaug=inaug[-nrow(inaug),] # remove the last line, irrelevant due to error.
+
+inaug.list=read.csv("../data/inauglist.csv", stringsAsFactors = FALSE)
+inaug.list <- cbind(inaug.list, inaug)
+
+inaug.list$fulltext=NA
+for(i in seq(nrow(inaug.list))) {
+  text <- read_html(inaug.list$urls[i]) %>% # load the page
+    html_nodes(".displaytext") %>% # isloate the text
+    html_text() # get the text
+  inaug.list$fulltext[i]=text
+}
+```
+
+### 3. Generate the list of sentences
+```{r}
+sentence.list=NULL
+for(i in 1:nrow(inaug.list)){
+  sentences=sent_detect(inaug.list$fulltext[i],
+                        endmarks = c("?", ".", "!", "|",";"))
+  if(length(sentences)>0){
+    emotions=get_nrc_sentiment(sentences)
+    word.count=word_count(sentences)
+    # colnames(emotions)=paste0("emo.", colnames(emotions))
+    # in case the word counts are zeros?
+    emotions=diag(1/(word.count+0.01))%*%as.matrix(emotions)
+    sentence.list=rbind(sentence.list, 
+                        cbind(inaug.list[i,-ncol(inaug.list)],
+                              sentences=as.character(sentences), 
+                              word.count,
+                              emotions,
+                              sent.id=1:length(sentences),
+                              row.names=NULL
+                              )
+    )
+  }
+}
+```
+
+```{r}
+sentence.list=
+  sentence.list%>%
+  filter(!is.na(word.count)) 
+```
+
+### 4. Read in the speeches from txt file
+```{r}
+# folder.path="../data/InauguralSpeeches/"
+folder.path="../data/inaugurals/"
+speeches=list.files(path = folder.path, pattern = "*.txt")
+prex.out=substr(speeches, 6, nchar(speeches)-4)
+
+ff.all<-Corpus(DirSource(folder.path))
+# summary(ff.all)
+# inspect(ff.all[1])
+```
+
+### 5. Text processing
+```{r}
+# Stripping uncessary whitespace
+ff.all<-tm_map(ff.all, stripWhitespace)
+ff.all<-tm_map(ff.all, content_transformer(tolower))
+# Remove common words (stopwords) that usually have no analytic value
+# For a list of the stopwords: stopwords("english")
+ff.all<-tm_map(ff.all, removeWords, stopwords("english"))
+ff.all<-tm_map(ff.all, removeWords, character(0))
+ff.all<-tm_map(ff.all, removePunctuation)
+# ff.all<-tm_map(ff.all, removeNumbers)
+# ff.all <- tm_map(ff.all, removeWords, c("syllogism", "tautology"))  
+# To finish, use the following script, tells R to treat your processed documents as text documents
+# ff.all <- tm_map(ff.all, PlainTextDocument)
+
+```
+
+
+
+## Part 1. How do the speech lengths change by year?
+```{r, fig.height=6, fig.width=9}
+year<- substr(inaug.list$links, nchar(inaug.list$links)-3, nchar(inaug.list$links))
+year <- as.numeric(year)
+inaug.list %>%
+ggplot(aes(x=year, y=(Words)))+
+  geom_bar(stat = "identity", width = 0.5, position = position_dodge(0.7))+
+  theme(axis.text.x = element_text(vjust=1,angle=90))+
+  geom_text(aes(label=President), vjust=0,angle=90,size=2.5,hjust=0)+ylim(c(0,12000))+
+  labs(title="How do the speech lengths change by year?")+
+  geom_text(aes(1861,0),label="Start of Civil War",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col="darkorange1")+geom_vline(xintercept = 1861,linetype=2, col="darkorange1")+
+  geom_text(aes(1865,0),label="End of Civil War",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col="aquamarine3")+geom_vline(xintercept = 1865,linetype=2, col="aquamarine3")+
+  geom_text(aes(1929,0),label="Great Depression",show.legend = F,hjust=-1,vjust=1,,angle=90,inherit.aes = F, col= "cadetblue2")+geom_vline(xintercept = 1929,linetype=2, col= "cadetblue2")+
+  geom_text(aes(1941,0),label="WW2",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "coral1")+geom_vline(xintercept = 1941,linetype=2, col = "coral1")+
+  geom_text(aes(2001,0),label="9/11",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F,col = "deeppink3")+geom_vline(xintercept = 2001,linetype=2, col = "deeppink3")+
+  geom_text(aes(1963,0),label="JFK Assassination",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "bisque4")+geom_vline(xintercept = 1963,linetype=2, col = "bisque4")+
+  geom_text(aes(1914,0),label="WWI",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "palevioletred1")+geom_vline(xintercept = 1914,linetype=2, col = "palevioletred1")+
+  geom_text(aes(2008,0),label="Wall Street Crash",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "goldenrod1")+geom_vline(xintercept = 2008,linetype=2, col = "goldenrod1") 
+
+```
+
+The plot shows that highly acknowledged and successful Presidents include George Washington, 
+Theodore Roosevelt, and John F. Kennedy had short inaugural speeches. On the contrary, those who are know as a worst Presidents like William Henry Harrison and Herbert Hoover had longer speeches. Among all Presidents, William Henry Harrison had the longest speech. 
+
+When taking the historical events into consideration, I notice that in the wartime, Presidents usually kept their speech short. 
+
+## Part 2. How do the sentence length distribution change by year?
+
+```{r}
+par(mar=c(4, 11, 2, 2))
+
+sentence.list.sel=filter(sentence.list, Term==1)
+sentence.list.sel$File=factor(sentence.list.sel$File)
+sentence.list.sel$FileOrdered=reorder(sentence.list.sel$File, 
+                                  sentence.list.sel$word.count, 
+                                  mean, 
+                                  order=T)
+
+beeswarm(word.count~FileOrdered, 
+         data=sentence.list.sel,
+         horizontal = TRUE, 
+         pch=16, col=alpha(brewer.pal(9, "Set1"), 0.6), 
+         cex=0.55, cex.axis=0.8, cex.lab=0.8,
+         spacing=5/nlevels(sentence.list.sel$FileOrdered),
+         las=2, xlab="Number of words in a sentence.", ylab="",
+         main="Sentence Length distribution")
+```
+
+From the bee swarm plot, we can see that the sentences' length are on average between 5 and 60. George Bush, Donald J Trump,a nd Herbert Hoover used more short sentences in their inaugural speeches, since their part for short sentences are thicker than others speeches. 
+
+It is interesting to see that the recent Presidents used less long sentences. Actually, sentence lengths have been falling since the founding of the republic. The changes of sentence distribution of inaugural speeches went along the trend of the using of English overall --- shorter sentences and fewer embedded clauses. It also probably due to that, by using shorter sentences, President can easily reach "the common folks". In the past, only very well-educated people have access to these speeches, so the Presidents tend to use longer sentences to show their erudition. Another possible reason for the shorter speeches recently is the rise of anti-intellectualism. 
+
+## Part 3. How does the sentiment in speeches impacted by influential historical events?
+```{r}
+sent_scores <- sentiments %>% filter(lexicon=="AFINN")
+inaug.list.with.year <- cbind(inaug.list, year)
+inaug.list.with.year%>%
+  unnest_tokens(word, fulltext) %>%
+  inner_join(sent_scores, by="word") %>%
+  select(-c(sentiment,lexicon)) %>%
+  group_by(year) %>%
+  summarise(score=sum(score)) %>%
+  ggplot(aes(x=year,y=score))+
+  geom_point()+
+  geom_line()+
+  ylim(c(-10,350))+
+  labs(title="Sentiment Scores of Inaugural Speeches")+
+  geom_text(aes(1861,0),label="Start of Civil War",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col="darkorange1")+geom_vline(xintercept = 1861,linetype=2, col="darkorange1")+
+  geom_text(aes(1865,0),label="End of Civil War",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col="aquamarine3")+geom_vline(xintercept = 1865,linetype=2, col="aquamarine3")+
+  geom_text(aes(1929,0),label="Great Depression",show.legend = F,hjust=-1,vjust=1,,angle=90,inherit.aes = F, col= "cadetblue2")+geom_vline(xintercept = 1929,linetype=2, col= "cadetblue2")+
+  geom_text(aes(1941,0),label="WW2",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "coral1")+geom_vline(xintercept = 1941,linetype=2, col = "coral1")+
+  geom_text(aes(2001,0),label="9/11",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F,col = "deeppink3")+geom_vline(xintercept = 2001,linetype=2, col = "deeppink3")+
+  geom_text(aes(1963,0),label="JFK Assassination",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "bisque4")+geom_vline(xintercept = 1963,linetype=2, col = "bisque4")+
+  geom_text(aes(1914,0),label="WWI",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "palevioletred1")+geom_vline(xintercept = 1914,linetype=2, col = "palevioletred1")+
+  geom_text(aes(2008,0),label="Wall Street Crash",show.legend = F,hjust=-1,vjust=1,angle=90,inherit.aes = F, col = "goldenrod1")+geom_vline(xintercept = 2008,linetype=2, col = "goldenrod1") 
+
+```
+
+For this plot, I first calculate the sentiment scores for each speech as the sum of sentiment scores for each word in the sentence. The sentiment scores are given by AFINN lexicon, which is available from tidytext package. Then I add the time line for important historical events happened in U.S.
+
+As can be seen from the plot, sentiment score were lower during the nation's tough time (negative influential events), and were lowest during the Civil War.
+
+I am interested in what specific sentiments in these speeches contributed to the large variation in sentiment score. Besides, how the different sentiments can be explained by historical events? Therefore, several Presidents are selected for detail analysis: 1789 George Washington (111); 1817 James Monroe (314); 1861	Abraham Lincoln (-5); 1925	Calvin Coolidge (275); 1933	Franklin D. Roosevelt (42); 2009	Barack Obama (62). 
+
+I will look at the different sentiments in several speeches in detail and observe how Presidents shift along with different historical situation. 
+
+```{r}
+inaug.list.sentiment <- NULL
+for(i in 1:nrow(inaug.list)){
+  text=inaug.list$fulltext[i]
+  emotions=get_nrc_sentiment(text)
+  emotions=emotions/sum(emotions)
+  inaug.list.sentiment=rbind(inaug.list.sentiment, 
+                             cbind(inaug.list[i,-ncol(inaug.list)],
+                                   word.count,
+                                   emotions,
+                                   row.names=NULL
+                             )
+  )
+}
+```
+
+```{r}
+col.use <- c("lightpink1", "navajowhite2", "lightyellow", 
+            "darkseagreen1", "mediumpurple1",
+            "lightpink1", "navajowhite2", 
+            "lightyellow")
+par(mfrow=c(2,3))
+df <- inaug.list.sentiment[year==1789,]%>%
+  select(anger:trust)
+barplot(colMeans(df), las=2, horiz=T, col=col.use, main="George Washington")
+df <- inaug.list.sentiment[year==1817,]%>%
+  select(anger:trust)
+barplot(colMeans(df), las=2, horiz=T, col=col.use, main="James Monroe")
+df <- inaug.list.sentiment[year==1861,]%>%
+  select(anger:trust)
+barplot(colMeans(df), las=2, horiz=T, col=col.use, main="Abraham Lincoln")
+df <- inaug.list.sentiment[year==1925,]%>%
+  select(anger:trust)
+barplot(colMeans(df), las=2, horiz=T, col=col.use, main="Calvin Coolidge")
+df <- inaug.list.sentiment[year==1933,]%>%
+  select(anger:trust)
+barplot(colMeans(df), las=2, horiz=T, col=col.use, main="Franklin D. Roosevelt")
+df <- inaug.list.sentiment[year==2009,]%>%
+  select(anger:trust)
+barplot(colMeans(df), las=2, horiz=T, col=col.use, main="Barack Obama")
+
+```
+
+This plot displays the percentage of eight sentiments in each selected speechs. All Presidents emphasized "Trust" in their speech, which is very reasonable due to the nature of the insugural speech. 
+James Monroe's speech had the highest sentiment score. Trust, joy and anticipation were the majority part of his sentiment, and negative sentiment such as sadness and disguest were very low compared to others. 
+Abraham Lincoln's speech were during the Civil War and had the lowest sentiment score. We can see from the plot that he emphasized the sentiment of anger and sadness, which is probably due to the War. This is similar to the Barack Obama's speech, in which the concern for Wall Street Crash was addressed. 
+
+```{r}
+par(mfrow=c(2,2))
+
+f.plotsent.len(In.list=sentence.list, InFile="JamesMonroe", 
+               InTerm=1, President="James Monroe")
+f.plotsent.len(In.list=sentence.list, InFile="CalvinCoolidge", 
+               InTerm=1, President="Calvin Coolidge")
+f.plotsent.len(In.list=sentence.list, InFile="AbrahamLincoln", 
+               InTerm=1, President="Abraham Lincoln")
+f.plotsent.len(In.list=sentence.list, InFile="BarackObama", 
+               InTerm=1, President="Barack Obama")
+
+```
+
+When tracking the sentiments through out specific speeches, I find that the speeches that had lower sentiment score (Abraham Lincoln and Barack Obama) are more colorful than the speeches that had higher sentiment score. It is probably because that, when conveying positive messages, the President could just be simply possitive. However, when delivering negative messages, the President also had to encourage people to fight the struggles, so it had to come together with positive messages. 
+
+## Part 4. How does key words changed over time? How does it relate to the U.S. history?
+
+(This part has reference: http://ellisp.github.io/blog/2017/01/23/inaugural-speeches)
+```{r}
+inaug.text <- inaug.list.with.year[, c("links", "President", "year", "fulltext")] %>%
+  unnest_tokens(word, fulltext, token = "words") %>%
+  group_by(President) %>%
+  mutate(sequence = 1:n())
+
+words <- inaug.text %>%
+  group_by(links, word, year, President) %>%
+  summarise(count = n()) %>%
+  bind_tf_idf(word, President, count) %>%
+  ungroup()
+
+# all.equal(nrow(inaug.text), sum(words$count))
+
+all_usage <- words %>%
+  group_by(word) %>%
+  summarise(total_count = sum(count)) %>%
+  arrange(desc(total_count))
+
+words <-words %>%
+  left_join(all_usage, by = "word")
+
+words %>%
+  mutate(word = ifelse(grepl("americ", word), "america", word),
+         word = ifelse(grepl("democra", word), "democracy", word),
+         word = ifelse(grepl("free", word), "free", word)) %>%
+  group_by(links, President, year, word) %>%
+  summarise(count = sum(count)) %>% 
+  group_by(links, President, year) %>%
+  mutate(relative_count = count / sum(count)) %>%
+  filter(word %in% c("america", "free", "democracy")) %>%
+  ggplot(aes(x = year, y = relative_count, label = President)) +
+  geom_point()+
+  geom_text(aes(lable=President), hjust=0, vjust=0, size=2)+
+  facet_wrap(~word, ncol = 1, scales = "free_y") +
+  ggtitle("Changing use of selected words in inaugural Presidential addresses",
+          "Presidents labelled if they used the word or a variant.") +
+  labs(x = "", y = "Number of times used as a percentage of all words") +
+  geom_vline(xintercept = 1861,linetype=2, col="darkorange1")+
+  geom_vline(xintercept = 1865,linetype=2, col="aquamarine3")+
+  geom_vline(xintercept = 1929,linetype=2, col= "cadetblue2")+
+  geom_vline(xintercept = 1941,linetype=2, col = "coral1")+
+  geom_vline(xintercept = 2001,linetype=2, col = "deeppink3")+
+  geom_vline(xintercept = 1963,linetype=2, col = "bisque4")+
+  geom_vline(xintercept = 1914,linetype=2, col = "palevioletred1")+
+  geom_vline(xintercept = 2008,linetype=2, col = "goldenrod1") 
+
+```
+This plot is still complimented with the time line for historical events, for the name of events please refer to the previous part. 
+
+The use of "america" and its variate were more and more popular in the 20 centurys (after World War 2), and peaked at Trump's speech. The popularity of this word and its variate probably came together with the dominant status of U.S. in the world. For example, Trump used "america" with high frequency to deliver his ideology of "America first". 
+The word "democracy" and its variate first peaks after the Great Depression and before World War 2, used by Franklin Delano Roosevelt. During the time of economic troubles, FDR managed to establish "democracy" as an ideology and a form of goverment to support his leadership. Then when the country is enveloped in World War 2, Presidents used less "democracy" probably because they intended to avoid grandiose language in wartime speeches.
+The word "free" and its variate were very popular during the Cold War speeches. 
+
+Next I wan to look at the different key words over different time period.
+
+```{r}
+year <- inaug.list.with.year$year
+time1 <- which(year >= 1849 & year <=1877)
+time2 <- which(year >= 1881 & year <=1901)
+time3 <- which(year >= 1929 & year <=1945)
+time4 <- which(year >= 1949 & year <=1965)
+time5 <- which(year >= 1969 & year <=2017)
+
+# tdm.all<-TermDocumentMatrix(ff.all)
+dtm.all<-DocumentTermMatrix(ff.all,control = list(weighting = function(x)
+                                             weightTfIdf(x, normalize =FALSE),stopwords = TRUE))
+# dtm.all=tidy(dtm.all)
+# dtm.all <- removeSparseTerms(dtm.all, 0.4) # This makes a matrix that is 20% empty space, maximum.
+
+dtm.mat <- as.data.frame(as.matrix(dtm.all), stringsAsFactors = F)
+# rearrange the sequence of data frame
+name.list <- paste(as.character(inaug.list$File), "-", as.character(inaug.list$Term), sep = "")
+dtm.mat <- dtm.mat[rank(name.list),]
+row.names(dtm.mat) <- c(1:58)
+
+# seperate the dtm by period
+dtm.mat.1 <- dtm.mat[time1, ]
+freq.1 <- sort(colSums(dtm.mat.1), decreasing = T)
+dtm.mat.2 <- dtm.mat[time2, ]
+freq.2 <- sort(colSums(dtm.mat.2), decreasing = T)
+dtm.mat.3 <- dtm.mat[time3, ]
+freq.3 <- sort(colSums(dtm.mat.3), decreasing = T)
+dtm.mat.4 <- dtm.mat[time4, ]
+freq.4 <- sort(colSums(dtm.mat.4), decreasing = T)
+dtm.mat.5 <- dtm.mat[time5, ]
+freq.5 <- sort(colSums(dtm.mat.5), decreasing = T)
+
+
+```
+
+I seperate the speeches into 5 parts: 1849-1877 Civil war and reconstruction; 1881-1901 Industrial Progress; 1929-1945 Great depression and WW2; 1949-1965 Cold War; 1969-2017 Present
+
+Now, let's look at the wordclouds for each period.
+
+```{r, warning=FALSE}
+set.seed(142)   
+wordcloud(names(freq.1), freq.1,scale=c(5,0.5),
+          max.words=50,min.freq=1,random.order=FALSE,rot.per=0.3,use.r.layout=T,
+          random.color=FALSE,colors=brewer.pal(8,"Blues"))
+```
+During the period of Civil war and reconstruction (1841-1887), Presidents made considerable mention of the "union", "constitution", "slavery", and "dispute", which are the main topic of Civil War: the uncompromising differences between the free and slave states over the power of the national government to prohibit slavery in the territories that had not yet become states. 
+
+
+```{r, warning=FALSE}
+wordcloud(names(freq.2), freq.2,scale=c(5,0.5),
+          max.words=100,min.freq=1,random.order=FALSE,rot.per=0.3,use.r.layout=T,
+          random.color=FALSE,colors=brewer.pal(8,"Blues"))
+```
+
+During the Industrial Progress period (1881-1901), U.S. went through great industrial progress and the development of economy, thus we can see the prominence in the speech given to "revenue", "commercial", "business", and "loans". In addition, the rise of words "cuba" and "tariff" were refering to the free trade agreement that the congress were discussing. 
+
+```{r, warning=FALSE}
+wordcloud(names(freq.3), freq.3,scale=c(5,0.5),
+          max.words=100,min.freq=1,random.order=FALSE,rot.per=0.3,use.r.layout=T,
+          random.color=FALSE,colors=brewer.pal(8,"Blues"))
+```
+
+From 1929 to 1945, U.S. went through Great depression and WW2, so the speeches contains considerable mention to "democracy", "liquor", "helped" and "recovery". Also it is worth mentioning that the women's suffrage movement were during that period, which can explains that frequent occurence of the word "women". 
+
+```{r, warning=FALSE}
+wordcloud(names(freq.4), freq.4,scale=c(5,0.5),
+          max.words=100,min.freq=1,random.order=FALSE,rot.per=0.3,use.r.layout=T,
+          random.color=FALSE,colors=brewer.pal(8,"Blues"))
+```
+
+During the Cold War era (1949-1965), U.S. also entered a period of prosperity and growth, thus Presidents included discussion of "communism", and thchnocratic term "program". 
+
+```{r, warning=FALSE}
+wordcloud(names(freq.5), freq.5,scale=c(5,0.5),
+          max.words=100,min.freq=1,random.order=FALSE,rot.per=0.3,use.r.layout=T,
+          random.color=FALSE,colors=brewer.pal(8,"Blues"))
+
+```
+After 1960, Presidents made extensive mention to "america" and its variants, which can be explained by the dominant status of the U.S. in the world and the prevail of "Ameracan dream". In addition, we can see the rise of individualism from keywords such as "I", "today" and "freedom". 
+
+## Conclusion
+1.	The length of the inaugural speeches did not vary much from time to time, but during war time, Presidents usually kept their speech short. 
+2.	The sentence length had been falling since George Washington. One possible reason why recent Presidents avoided using long sentence is that they want to reach "the common folks". In the past, only very well-educated people have access to these speeches. Another explanation is the rise of anti-intellectualism.
+3.	The sentiment scores for each speech were lower during the nation's tough time, such as World War 2, 9/11, and Wall Street Crash. It was lowest during the Civil War. "Trust", "joy", and "anticipation" were majority components in speeches that earned high sentiment score, while "anger" and "fear" sentiments were stronger in the speeches that had low sentiment score, especially for those speeches made during war time. In addition, sentiments are more diversified (more colorful in plots) for speeches with lower sentiment score. 
+4.	Inaugural speeches are snapshots of a slice of U.S. history. The keywords in speeches during a certain time are closely related to the hot topics or historical events during that period. 
+
+So, the length, sentences distribution, sentiments, and keywords in inaugural speeches are closely related to the social, economic, and political trends in U.S.. In other words, inaugural speeches are snapshots of a slice of U.S. history.
+
+
+
+
+
+
+
+
